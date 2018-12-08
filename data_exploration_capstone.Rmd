@@ -1,0 +1,352 @@
+---
+title: "Data Exploration Corpusses"
+author: "Bert Schwenk"
+date: "28 november 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(DT)
+library(sp)
+library(wordcloud) #create word cloud graphic. Find first matching frequencies
+#library(qdap) #preprocessing tools
+library(stringi)
+library(stringr)
+
+#library(rJava)
+#library(RWeka)
+```
+
+
+
+## Introduction
+
+This document is made as part of the the Coursera Data Science Capstone project.
+It is the first step of creating a text prediction application in R. In this first step I will look into:  
+1. loading of data,  
+2. data exploration  
+3. preprocessing data 
+4. saving the results for further use
+
+At the end of this document the basic findings so far are given plus a look ahead how to progress the model further into a text prediction app. 
+
+NB: note that the loadData.R file contains some functions for data loading and preprocessing corpora. See my github page for more details. On github there is also the RMD file. In this document only general calculations and results are shown, as this is is a management level document.
+  
+```{r loadScripts}
+source("loadData.R") #this file contains 
+```
+  
+##Data loading  
+For this project there are three files provided:  
+- en_US.blogs.txt  
+- en_US.news.txt  
+- en_US.twitter.txt  
+
+The files are downloaded from the [Coursera website](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip) and extracted into the '/sources/' subfolder. I did this manually to save time loading and extraction these large files.  
+
+The files contain texts from respectively blogs, newsfeeds and twitter.
+The purpose of these files is to have sample texts which provide information to base predictions of the next word on.
+  
+I will load the three documents for exploratory analysis. Because further analysis shows that the documents are too large to handle, a random subsample is taken. This will contain a large enough dataset to base the prediction algoritms on. Initially 3% of all datasets was taken to do exploratory analysis. Because differences in the size and structure of the files this was enlarged (news) or reduced (blogs/twitter) based on results at a later stage of this exploratory analysis. It was my goal to include a more evenly distributed sample between the three sources. 
+```{r data_load, warning=FALSE, message=FALSE, echo=FALSE, include=FALSE}
+#*** Load all texts from textfiles ***
+#Note I will use some self written functions in the loadData.R file. 
+
+#Twitter
+twitter <- loadLinesFromFile("sources/","en_US.twitter.txt") 
+
+#Blogs
+blogs <- loadLinesFromFile("sources/","en_US.blogs.txt") 
+
+#News
+news <- loadLinesFromFile("sources/","en_US.news.txt") 
+
+
+#*** Reduce the amount of data because files are too large to handle  ***
+#The amounts where initially 3% of all datasets. This was adjusten based on data exploration to get a more even distribution of content between twitter, blogs and news datasets.
+
+set.seed(1001)
+factor <- 0.3 #use factor 1 for neutral amount. 0.01 for quick testing with limited size texts.
+
+#Twitter
+smlTwitter <-  selectRandomTexts(twitter,"sources/en_US.twitter_small.txt",fraction=0.021*factor)
+
+#Blogs
+smlBlogs <-  selectRandomTexts(blogs,"sources/en_US.blogs_small.txt",fraction=0.021*factor)
+
+#News
+smlNews <-  selectRandomTexts(news,"sources/en_US.news_small.txt",fraction=0.3*factor)
+
+```
+Visual inspection also shows that some of the texts contain mostly one sentence per line (twitter, news). The blogs texts however often contains whole stories per textline. In order to capture the next word it is necessary to split every sentence into a new line, the last word of the previous sentance is not really related to the first word of the next sentence. In the analysis it also was visible that a lot of sentences only consist of a few characters or words. I chose to remove shorter sentences than 15 characters. This improves the quality of the sentences a lot.
+
+```{r tokenise_texts, warning=FALSE, message=FALSE, echo=TRUE, include=FALSE}
+#split texts into separate sentences using tokenisation functionality
+library(tokenizers)
+smlTwitter <- unlist(tokenize_sentences(smlTwitter))
+smlBlogs <- unlist(tokenize_sentences(smlBlogs))
+smlNews <- unlist(tokenize_sentences(smlNews))
+
+#remove all lines shorter than 15 characters (these probably have too little words to be usefull in model building)
+smlTwitter<-smlTwitter[nchar(smlTwitter)>=15] 
+smlBlogs<-smlBlogs[nchar(smlBlogs)>=15]
+smlNews<-smlNews[nchar(smlNews)>=15]
+
+#do basic cleaning of datasets because of many non ascii characters in the texts
+smlTwitter <- cleanStringTexts(smlTwitter)
+smlBlogs <- cleanStringTexts(smlBlogs)
+smlNews <- cleanStringTexts(smlNews)
+```
+
+After loading the reduced datasets these are loaded in Corpus objects. Corpusses provide a structured way to store text data and enable various NLP (natural language processing) functions. 
+
+```{r data_load_corpus, warning=FALSE, message=FALSE, echo=FALSE, include=FALSE}
+#convert text files to corpora
+corpTwitter <- textToCorpus(smlTwitter)
+corpBlogs <- textToCorpus(smlBlogs)
+corpNews <- textToCorpus(smlNews)
+
+```
+
+
+##Data exploration
+Visual inspection of the loaded data also showed that the (grammatical) quality of the texts is often not that good.  
+A few examples:   
+- Punctuation is not always according to grammatical rules;  
+- Profane language is used in the texts;  
+- The text contains a lot of numbers and special characters.  
+  
+It is clear that data cleaning is required. This will be done in data preprocessing. This is most true for the blogs and twitter datasets. The news dataset is gramatically better and has less profane words. The twitter dataset also has less unique words on average in the text.
+
+```{r create_doc_term_matrix, echo=FALSE}
+#count words per textdocument (only reduced document)
+dtmTwitter <- DocumentTermMatrix(corpTwitter)
+dtmBlogs <- DocumentTermMatrix(corpBlogs)
+dtmNews <- DocumentTermMatrix(corpNews)
+```
+
+Below I added a table containing amount of textlines per document (original and reduced sample size) and the unique word counts per document. These calculations are based on document term matrices. Visible is that even with a limited size, we still have about `r dtmTwitter$ncol` unique words in the dataset. This should be sufficient to make a prediction algoritm on. 
+
+```{r data_load_visual, echo=FALSE}
+#make summary of loaded files
+textSummary <- data.frame(name=c("twitter","blogs","news"),lineCountOriginal=c(length(twitter),length(blogs),length(news)),lineCountReduced=c(length(smlTwitter),length(smlBlogs),length(smlNews)),UniqueWordsReduced=c(dtmTwitter$ncol,dtmBlogs$ncol,dtmNews$ncol),UniqueWordsPerLineReduced=c(round(dtmTwitter$ncol/length(smlTwitter),1),round(dtmBlogs$ncol/length(smlBlogs),1),round(dtmNews$ncol/length(smlNews),1)),WordCountReduced_X_Milj=c(round(sum(dtmTwitter$j)/1000000,0),round(sum(dtmBlogs$j)/1000000,0),round(sum(dtmNews$j)/1000000,0)))
+
+datatable(textSummary)
+#barplot(names.arg = textSummary$name,height=textSummary$lineCount, main="Amount of lines per textfile.")
+```
+In the first analysis cycle it was visible that the Twitter dataset contained the most lines. The above amounts are already corrected based on these findings. This includes taking (1000%) higher percentage of News lines; a (30%) lower amount of twitter data and a (30%) lower amount of blog textlines.This will also balance the results of the prediction, as we would get more 'Twitter'-like predictions if nothing was corrected. This accounts for the News dataset being much smaller, but having more unique words per line. It also accounts for the Blogs dataset already been split into separate sentences per line.   
+  
+It is also interesting to see if which terms are most frequent. See overview below for Twitter (other sources show similar result - see appendix 1). Clear is that 'The' and 'And' are very common in all datasets. Also other stop words as with, that, you, have, etc. are very common. After that, the word frequencies decline more gradually. I am not yet sure if these should be removed when predicting the next word, as the next word is often 'the' or 'and'. On the other side there is almost no predictive value of words preceding or following 'and', 'the' and other stop words. For now however, I keep them in.  
+```{r find_terms, echo=FALSE}
+#Get most frequent terms
+mostFrequentTwitter <- findFreqTerms(dtmTwitter,lowfreq = 1000) 
+mostFrequentBlogs <- findFreqTerms(dtmBlogs,lowfreq = 1000)
+mostFrequentNews <- findFreqTerms(dtmNews,lowfreq = 1000)
+
+#reduce dtm to only most common term and list frequencys to make table and wordClouds
+dtmTwitterSmall = removeSparseTerms(dtmTwitter, 0.99)
+freqTableTwitter = data.frame(sort(colSums(as.matrix(dtmTwitterSmall)), decreasing=TRUE))
+names(freqTableTwitter) <- "UniqueWordsTwitter"
+print(paste0("The Twitter dataset has ",length(mostFrequentTwitter)," unique words with more than 1000 occurences."))
+print("In the Twitter dataset these words occur most frequently:")
+print(head(freqTableTwitter,10))
+
+#show wordcloud graph
+print("Twitter most frequent placed in wordcloud:")
+wordcloud(rownames(freqTableTwitter), freqTableTwitter[,1], max.words=50) 
+
+#show bar plot with frequencies - gives insight into relative differences
+print("Twitter distribution of most common words:")
+barplot(freqTableTwitter$UniqueWordsTwitter, main=paste0("Twitter: unique word counts for most common ",dtmTwitterSmall$ncol," words"),xlab="words",ylab="word count")
+```
+
+Looking at the least frequent terms, there is some data cleaning necessary. Many contain good words, but are preceded by "\" sign (summation of terms), are inside quotes or have a '-' sign and there are various numbers. these should be removed. Below a sample of the least frequent words (<5 occurences) is shown from the three datasets:
+
+```{r termsLeast, echo=FALSE, results=TRUE}
+#Get least frequent terms
+leastFrequentTwitter <- findFreqTerms(dtmTwitter,highfreq = 5) 
+leastFrequentBlogs <- findFreqTerms(dtmBlogs,highfreq = 5)
+leastFrequentNews <- findFreqTerms(dtmNews,highfreq = 5)
+
+head(leastFrequentTwitter,30)
+head(leastFrequentBlogs,30)
+head(leastFrequentNews,30)
+```
+
+
+##Data preparation
+In this stage I will do some data cleaning based on above findings.
+First is the basic cleaning of the texts.
+
+- Basic cleaning of words (lower case, replace special characters, remove quotes, replace punctuation, etc.). This gets rid of all the most common 'strange' words and characters. 
+- Replace all profane words with *beep* tag. I chose to replace instead of remove to not mess up the order. Later in de prediction we can remove all *beep* tags from the n-grams. This ensures that word orders are kept.
+- Ignore all words that only occur less than 4 times. These are probably wrongly spelled or have some other problems. This also get rid of a large part of the unique words, decreasing the size of the model and making it faster / less memory intensive. Below are the results from lower than 4 occurances and >=4 occurences. The latter has still some errors, where the last is quite good quality.  
+- I chose to combine all corpora to one big corpus. During prediction of the next word it also does not matter from which source the data comes.  
+
+```{r dataprep, echo=FALSE}
+#combine all corpora to one big corpus. This reduces computing because all calculations can be done at once.
+corpCombination <- c(corpBlogs,corpNews,corpTwitter)
+
+#Preprocess corpus, see loadData.R package for contents of this function.
+corpCombinationPreProcessed<-preProcessCorpus(corpCombination)  
+
+#replace all profane words with *beep* tag. 
+corpCombinationPreProcessed<-ReplaceProfaneWordsFromCorpus(corpCombinationPreProcessed) #very slow - replaced by below code
+
+#check document again
+dtm <- DocumentTermMatrix(corpCombinationPreProcessed)
+leastFrequentDtm <- findFreqTerms(dtm,highfreq = 3) #max occurences
+mostFrequentDtm <- findFreqTerms(dtm,lowfreq = 4) #minimal occurences
+print(paste("there are ",length(leastFrequentDtm),"unique words with less than 4 occurences. Below is a sample:"))
+tail(leastFrequentDtm,60)
+
+print(paste("there are ",length(mostFrequentDtm),"unique words with >= 4 occurences. Below is a sample:"))
+tail(mostFrequentDtm,60)
+
+
+```
+Unfortunatly I have to remove quite of bit of words. However, cutting unique words that only occur once or twice is not that bad. It is quite random that these where in de file in the first place. The good side is that many 'bad' or misspelled words are removed which we do not want to predict.  
+
+  
+#Get N-Grams
+Now I will calculate some N-Grams. I will focus on 2 and 3 word groups. Below is a sample of the most common N-Grams (resp 4 and 4 combinations). It is visible that the terms are quite standard common terms which could be correct. 
+```{r ngrams1, echo=FALSE}
+#Ngram2 <- function(x) NGramTokenizer(corpCombinationPreProcessedNew, Weka_control(min = 2, max = 2))
+#Ngram3 <- function(x) NGramTokenizer(corpCombinationPreProcessedNew, Weka_control(min = 3, max = 3))
+
+#2-gram tokeniser
+tdm2Gram <- TermDocumentMatrix(corpCombinationPreProcessed, control = list(tokenize = BigramTokenizer)) #
+Ngram2 <- findFreqTerms(tdm2Gram,lowfreq = 4) 
+print(paste("There are ",length(Ngram2)," unique combinations of more than 4 occurences. A sample of the most frequent 2-Gram words are: "))
+print(head(Ngram2,40))
+
+#2-gram tokeniser
+tdm3Gram <- TermDocumentMatrix(corpCombinationPreProcessed, control = list(tokenize = ThreegramTokenizer)) #
+Ngram3 <- findFreqTerms(tdm3Gram,lowfreq = 4) 
+print(paste("There are ",length(Ngram3)," unique combinations of more than 4 occurences. A sample of the most frequent 3-Gram words are: "))
+print(head(Ngram3,40))
+
+```
+The settings can be modified based on if you get good or bad combinations and how many combinations I want in the final model. 
+It is best to increase the values with bigger datasets, as the amount of faulty word doubles increases.  
+  
+Now I will build a table with frequency counts for all the words and n-grams. This dataset can later be saved to file and used during model building. This decreases the dataload a lot because there are much less unique words or wordcombinations to load than the complete texts at the beginning of this document.    
+```{r ngrams_to_frequency_tables, echo=FALSE}
+#***1 gram***
+tdm1GramSmall <- removeSparseTerms(TermDocumentMatrix(corpCombinationPreProcessed), 0.99983) #remove sparse items from TDM to be able to load freq matrix
+#Ngram1Small <- findFreqTerms(as.DocumentTermMatrix(tdm1GramSmall),lowfreq = 4) 
+freqTable1GramSmall <- data.frame(sort(colSums(as.matrix(as.DocumentTermMatrix(tdm1GramSmall))), decreasing=TRUE)) #Note this step is very memory intensive. Lower sparseterms factor if there are problems.
+names(freqTable1GramSmall) <- "UniqueWords"
+
+print(paste0("The 1-Gram dataset has ",nrow(freqTable1GramSmall)," unique words"))
+Ngram1SmallDataFrame <- data.frame(combination=as.character(rownames(freqTable1GramSmall)),count=freqTable1GramSmall$UniqueWords, stringsAsFactors=FALSE) #converting to proper data.frame
+
+
+#***2 gram***
+tdm2GramSmall <- removeSparseTerms(tdm2Gram, 0.9998) #remove sparse items from TDM to be able to load freq matrix
+#Ngram2Small <- findFreqTerms(as.DocumentTermMatrix(tdm2GramSmall),lowfreq = 4) 
+freqTable2GramSmall <- data.frame(sort(colSums(as.matrix(as.DocumentTermMatrix(tdm2GramSmall))), decreasing=TRUE)) #Note this step is very memory intensive. Lower sparseterms factor if there are problems.
+names(freqTable2GramSmall) <- "UniqueWords"
+
+print(paste0("The 2-Gram dataset has ",nrow(freqTable2GramSmall)," unique words combinations."))
+Ngram2SmallDataFrame <- data.frame(combination=as.character(rownames(freqTable2GramSmall)),count=freqTable2GramSmall$UniqueWords, stringsAsFactors=FALSE) #converting to proper data.frame
+
+
+#***3 gram***
+tdm3GramSmall <- removeSparseTerms(tdm3Gram, 0.9997) #remove sparse items from TDM to be able to load freq matrix
+#Ngram3Small <- findFreqTerms(as.DocumentTermMatrix(tdm3GramSmall),lowfreq = 4) 
+freqTable3GramSmall <- data.frame(sort(colSums(as.matrix(as.DocumentTermMatrix(tdm3GramSmall))), decreasing=TRUE)) 
+names(freqTable3GramSmall) <- "UniqueWords"
+
+print(paste0("The 3-Gram dataset has ",nrow(freqTable3GramSmall)," unique words combinations."))
+Ngram3SmallDataFrame <- data.frame(combination=as.character(rownames(freqTable3GramSmall)),count=freqTable3GramSmall$UniqueWords,  stringsAsFactors=FALSE) #converting to proper data.frame
+```
+
+There might be some word combinations that contain profane words (*beep*). I now choose to remove these combinations. This gives clean word combinations. The combinations are written to file for later use. After cleaning profane word combinations there are:
+```{r ngrams_profane, echo=FALSE}
+#remove all tokens with *BEEP* (profane words)
+profane <- grepl(pattern="*beep*",x=Ngram1SmallDataFrame$combination,fixed=TRUE)
+Ngram1SmallDataFrame <- Ngram1SmallDataFrame[profane==FALSE,] #filter for only without *beep*
+
+profane <- grepl(pattern="*beep*",x=Ngram2SmallDataFrame$combination,fixed=TRUE)
+Ngram2SmallDataFrame <- Ngram2SmallDataFrame[profane==FALSE,] #filter for only without *beep*
+
+profane <- grepl(pattern="*beep*",x=Ngram3SmallDataFrame$combination,fixed=TRUE)
+Ngram3SmallDataFrame <- Ngram3SmallDataFrame[profane==FALSE,] #filter for only without *beep*
+
+print(paste0("The 1-Gram dataset has ",nrow(Ngram1SmallDataFrame)," unique words"))
+print(paste0("The 2-Gram dataset has ",nrow(Ngram2SmallDataFrame)," unique words combinations."))
+print(paste0("The 3-Gram dataset has ",nrow(Ngram3SmallDataFrame)," unique words combinations."))
+
+print("Below are a few examples for the 3-gram category to get an idea: ")
+#print(head(Ngram1SmallDataFrame,30))
+#print(head(Ngram2SmallDataFrame,30))
+print(head(Ngram3SmallDataFrame,20))
+
+#look for synonyms in wordnet database (EXAMPLE CODE TO KEEP FOR LATER)
+#library("wordnet")                        
+#synonyms("about") #test with about.
+```
+Shown in a graphs this looks as follows for 1, 2 and 3 gram combinations:
+```{r ngrams_graph, echo=FALSE}
+#show wordcloud graph
+wordcloud(Ngram1SmallDataFrame$combination, Ngram1SmallDataFrame$count, max.words=75) 
+wordcloud(Ngram2SmallDataFrame$combination, Ngram2SmallDataFrame$count, max.words=30)
+wordcloud(Ngram3SmallDataFrame$combination, Ngram3SmallDataFrame$count, max.words=10)
+```
+  
+I will save the results to file for further use.   
+```{r ngrams_save, echo=TRUE, results=FALSE}
+#show wordcloud graph
+saveNGramsTexts(Ngram1SmallDataFrame,"result_ngram1.csv")
+saveNGramsTexts(Ngram2SmallDataFrame,"result_ngram2.csv")
+saveNGramsTexts(Ngram3SmallDataFrame,"result_ngram3.csv")
+```
+
+##Conclusions
+It was possible to load in various texts, analyse them and pre-process them to smaller collections that can be used for predicting the next word. The results can be used in the remainder of the capstone project. The big gain is that we do not have to use the huge textfiles anymore and that these have been condensed to smaller files containing the N-grams and frequency counts. 
+
+I can also make an estimate of the quality of the data set gathered. In the English Oxford dictionary there are 171,476 words ([source:](https://en.oxforddictionaries.com/explore/how-many-words-are-there-in-the-english-language/) ). In this case we would only have `r round(nrow(Ngram1SmallDataFrame)/171476*100,0)`% of all words. However, an avarage person uses only 20.000 words and a native 8 year old only 10.000 ([source:](https://wordcounter.io/blog/how-many-words-does-the-average-person-know/) ). This would take the completeness of this dataset to about `r round(nrow(Ngram1SmallDataFrame)/20000*100,0)`% and `r round(nrow(Ngram1SmallDataFrame)/10000*100,0)`% respecively. For basic use, the dataset looks big enough. For more advanced uses, the dataset is too small. For this application I think it is good enough to continue. Especially because this set is about the maximum my pc can handle memory wise.  
+  
+##What will be next...  
+There are still some open ends and considerations how to proceed next:  
+- The N-grams can I think be used to build a prediction model. I want to add new columns: first and next word, based on the numbers. When combining this with the frequencies, a prediction of the next word should be possible.  
+  
+- Stop words are at the moment included in the text. This looks like a good thing, because the next word in a sentence is often a stop word. However, it might be at a later stage that we do not want them in. Stop words can then easily be removed during data preparation using the TM_map functionality.
+  
+- It might also be a good idea to stem the texts to get stemmed words and to replace synonyms with a single word. This would make the model more compact. I have not done this, because I am not yet sure this would improve or break the prediction algoritm. If stemming is used it would also be necessary to replaced the stemmed words by correct English synonym. The stems are mostly not correct English. It might be good to delay this proces until a word is entered in the app. You can then match on the stem and search the next word (and eventualy get the correct English equivalent for that stemmed word). Another approach could be to add the stem also to the N-gram datasets. 
+  
+- Foreign words might be in the dataset. I checked manually through a sample of the unique word list. This showed that almost all was English language. It could be made better by checking every sentence for English and a few non English languages for stopwords. If more foreign stopwords are found, the sentence could be discarded.   
+  
+- It might be possible that some words are not in the resulting 1,2 or 3 gram collections. There are a few options:  
+   1. Increase the amount of text used (might not be very usefull if texts are already huge - runs into limits of computer memory)  
+   2. Increase the factor used for reducing sparse items (might lead to memory problems if too high - is however effective)  
+   3. Search for synonyms of the searched word. Maybe they are in the set? This could be done in combination of stemming  
+   4. Look for word associations of the searched word. This might be difficult or require a huge dataset in the app.  
+   5. Add the most common 1-gram word (or random word from top 10 most common).  
+   6. Report not found back in the app  
+   
+
+##Appendix 1 - Overview of most frequent terms
+```{r terms, echo=FALSE}
+dtmBlogsSmall = removeSparseTerms(dtmBlogs, 0.99)
+freqTableBlogs = data.frame(sort(colSums(as.matrix(dtmBlogsSmall)), decreasing=TRUE))
+names(freqTableBlogs) <- "UniqueWordsBlogs"
+print(paste0("The Blogs dataset has ",length(mostFrequentBlogs)," unique words over 1000 occurences."))
+print("Blogs word counts for most frequent words:")
+print(head(freqTableBlogs,10))
+wordcloud(rownames(freqTableBlogs), freqTableBlogs[,1], max.words=50)
+
+dtmNewsSmall = removeSparseTerms(dtmNews, 0.99)
+freqTableNews = data.frame(sort(colSums(as.matrix(dtmNewsSmall)), decreasing=TRUE))
+names(freqTableNews) <- "UniqueWordsNews"
+print(paste0("The News dataset has ",length(mostFrequentNews)," unique words over 1000 occurences."))
+print("News feed word counts for most frequent words:")
+print(head(freqTableNews,10))
+wordcloud(rownames(freqTableNews), freqTableNews[,1], max.words=50)
+
+
+
+```
+
